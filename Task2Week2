@@ -1,0 +1,226 @@
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+
+picam2 = Picamera2()
+video_config = picam2.create_video_configuration(
+    main={"format": "XRGB8888", "size": (640, 480)},
+    controls={"FrameRate": 60}
+)
+picam2.configure(video_config)
+picam2.start()
+
+orb = cv2.ORB_create(nfeatures=1200)
+bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+
+symbol_names = ["Button", "Fingerprint", "Hazard", "QR", "Recycle"]
+template_descriptors = {}
+
+for name in symbol_names:
+    img = cv2.imread(f"/home/rasp4/Desktop/Pic Symbols/{name}.jpeg", 0)
+    if img is not None:
+        _, des = orb.detectAndCompute(img, None)
+        template_descriptors[name] = des
+    else:
+        print(f"Warning: Could not load {name}.jpeg")
+
+def is_symbol_candidate(cnt):
+    area = cv2.contourArea(cnt)
+    if area < 1500:
+        return False
+    x, y, w, h = cv2.boundingRect(cnt)
+    ratio = w / h if h != 0 else 0
+    if ratio < 0.6 or ratio > 1.4:
+        return False
+    rect_area = w * h
+    extent = area / rect_area if rect_area > 0 else 0
+    if extent < 0.35:
+        return False
+    return True
+
+def detect_arrow(cnt):
+    M = cv2.moments(cnt)
+    if M['m00'] == 0:
+        return None
+    cx = int(M['m10']/M['m00'])
+    cy = int(M['m01']/M['m00'])
+    max_dist = 0
+    tip = None
+    for p in cnt:
+        px, py = p[0]
+        dist = (px - cx)**2 + (py - cy)**2
+        if dist > max_dist:
+            max_dist = dist
+            tip = (px, py)
+    if tip is None:
+        return None
+    dx = tip[0] - cx
+    dy = tip[1] - cy
+    if abs(dx) > abs(dy):
+        return "Left Arrow" if dx > 0 else "Right Arrow"
+    else:
+        return "Up Arrow" if dy > 0 else "Down Arrow"
+
+def is_plus(cnt):
+    area = cv2.contourArea(cnt)
+    if area < 400:
+        return False
+    x, y, w, h = cv2.boundingRect(cnt)
+    if not 0.8 < w/h < 1.2:
+        return False
+    hull = cv2.convexHull(cnt, returnPoints=False)
+    if hull is None:
+        return False
+    defects = cv2.convexityDefects(cnt, hull)
+    if defects is None:
+        return False
+    deep_defects = sum(1 for i in range(defects.shape[0]) if defects[i,0,3] > 400)
+    return deep_defects == 4
+
+def detect_star(cnt):
+    hull_idx = cv2.convexHull(cnt, returnPoints=False)
+    defects = cv2.convexityDefects(cnt, hull_idx)
+    if defects is None:
+        return False
+    deep_defects = sum(1 for i in range(defects.shape[0]) if defects[i,0,3] > 300)
+    return deep_defects >= 5
+
+def detect_partial_circle(cnt, w, h):
+    peri = cv2.arcLength(cnt, True)
+    area = cv2.contourArea(cnt)
+    circularity = 4 * np.pi * area / (peri**2) if peri > 0 else 0
+    rect_area = w * h
+    extent = area / rect_area if rect_area > 0 else 0
+    if not (0.55 < circularity < 1.0 and extent > 0.5):
+        return None
+    hull_idx = cv2.convexHull(cnt, returnPoints=False)
+    defects = cv2.convexityDefects(cnt, hull_idx)
+    num_defects = sum(1 for i in range(defects.shape[0]) if defects[i,0,3] > 800) if defects is not None else 0
+    if num_defects == 0:
+        return "Semi Circle"
+    else:
+        return "Three Quarter Circle" if w >= 0.8*h else "Semi Circle"
+
+def detect_shape(cnt):
+    area = cv2.contourArea(cnt)
+    if area < 400:
+        return None
+    peri = cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, 0.01 * peri, True)
+    vertices = len(approx)
+    x, y, w, h = cv2.boundingRect(cnt)
+    hull = cv2.convexHull(cnt)
+    hull_area = cv2.contourArea(hull)
+    solidity = area / hull_area if hull_area > 0 else 0
+    if is_plus(cnt):
+        return "Plus"
+    if vertices == 4:
+        pts = approx.reshape(4,2)
+        sides = [np.linalg.norm(pts[i]-pts[(i+1)%4]) for i in range(4)]
+        return "Diamond" if max(sides)/min(sides) < 1.5 else "Trapezium"
+    if vertices == 8:
+        return "Octagon"
+    partial_circle_label = detect_partial_circle(cnt, w, h)
+    if partial_circle_label:
+        return partial_circle_label
+    if 5 <= vertices <= 12 and solidity < 0.9:
+        if detect_star(cnt):
+            return "Star"
+    arrow = detect_arrow(cnt)
+    if arrow:
+        return arrow
+    return None
+
+def detect_symbol(roi):
+    kp2, des2 = orb.detectAndCompute(roi, None)
+    if des2 is None:
+        return None
+    best_match = None
+    best_count = 0
+    for name, des1 in template_descriptors.items():
+        if des1 is None:
+            continue
+        matches = bf.knnMatch(des1, des2, k=2)
+        good = []
+        for m_n in matches:
+            if len(m_n) == 2:
+                m, n = m_n
+                if m.distance < 0.75 * n.distance:
+                    good.append(m)
+        if len(good) > best_count:
+            best_count = len(good)
+            best_match = name
+    return best_match if best_count > 12 else None
+
+try:
+    while True:
+        frame = picam2.capture_array()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5,5), 0)
+        _, thresh = cv2.threshold(
+            blur, 127, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
+        kernel = np.ones((3,3), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(
+            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        detected_items = []
+        for cnt in contours:
+            if cv2.contourArea(cnt) < 1500:
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            roi = gray[y:y+h, x:x+w]
+            symbol_label = detect_symbol(roi) if is_symbol_candidate(cnt) else None
+            if symbol_label:
+                label = symbol_label
+            else:
+                shape_label = detect_shape(cnt)
+                label = shape_label if shape_label else "Unknown"
+            detected_items.append((cnt, label))
+
+        # ---- Count diamonds and arrows ----
+        diamond_items = [item for item in detected_items if item[1]=="Diamond"]
+        arrow_items = [item for item in detected_items if "Arrow" in item[1]]
+
+        diamond_count = len(diamond_items)
+        arrow_count = len(arrow_items)
+
+        def get_center(items):
+            xs, ys, ws, hs = zip(*[cv2.boundingRect(cnt) for cnt,_ in items])
+            x_center = int(np.mean([x+w//2 for x,w in zip(xs, ws)]))
+            y_center = int(np.mean([y+h//2 for y,h in zip(ys, hs)]))
+            return x_center, y_center
+
+        # ---- Draw all other contours normally ----
+        for cnt, label in detected_items:
+            x, y, w, h = cv2.boundingRect(cnt)
+            color = (0,255,0)
+            # skip individual shapes if they will be replaced by combined label
+            if label=="Diamond" and diamond_count > 1:
+                continue
+            if "Arrow" in label and arrow_count > 1:
+                continue
+            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+            cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+        # ---- Draw combined labels ----
+        if diamond_count > 1:
+            xc, yc = get_center(diamond_items)
+            cv2.putText(frame, "QR", (xc-20, yc), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 2)
+
+        if 1 < arrow_count <= 3:
+            xc, yc = get_center(arrow_items)
+            cv2.putText(frame, "Recycle", (xc-40, yc), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,0,0), 2)
+        elif arrow_count > 3:
+            xc, yc = get_center(arrow_items)
+            cv2.putText(frame, "Fingerprint", (xc-50, yc), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,0,0), 2)
+
+        cv2.imshow("Detection", frame)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+
+finally:
+    cv2.destroyAllWindows()
+    picam2.stop()
