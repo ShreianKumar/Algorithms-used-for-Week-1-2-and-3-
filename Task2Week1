@@ -1,26 +1,3 @@
-#!/usr/bin/env python3
-#
-#  Task2Week1.py
-#  
-#  Copyright 2026 Unknown <rasp4@raspberrypi>
-#  
-#  This program is free software; you can redistribute it and/or modify
-#  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation; either version 2 of the License, or
-#  (at your option) any later version.
-#  
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#  GNU General Public License for more details.
-#  
-#  You should have received a copy of the GNU General Public License
-#  along with this program; if not, write to the Free Software
-#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-#  MA 02110-1301, USA.
-#  
-#  
-
 import RPi.GPIO as GPIO
 import time
 import sys
@@ -38,8 +15,8 @@ for pin in pins:
     GPIO.setup(pin, GPIO.OUT)
 
 # Initialize PWM outside the loop
-pwm_left = GPIO.PWM(en1,1000)
-pwm_right = GPIO.PWM(en2, 1000)
+pwm_left = GPIO.PWM(en1,500)
+pwm_right = GPIO.PWM(en2, 500)
 pwm_left.start(0)
 pwm_right.start(0)
 
@@ -60,38 +37,43 @@ def left():
     GPIO.output(in2, True)
     GPIO.output(in3, True)
     GPIO.output(in4, False)
+    pwm_left.ChangeDutyCycle(100)
+    pwm_right.ChangeDutyCycle(100)
     
 def right():
     GPIO.output(in1, True)
     GPIO.output(in2, False)
     GPIO.output(in3, False)
     GPIO.output(in4, True)
+    pwm_left.ChangeDutyCycle(100)
+    pwm_right.ChangeDutyCycle(100)
 
 
 try:
     while True:
-        cmd = input("Command: ").lower()
+        value = input("Enter an angle: ")
+        angle = float(value)
+        duration = abs(angle) * 0.0095
         
-        if cmd == "a":
-            print("Moving left...")
-            left()
-            set_speed(100) 
-        
-        elif cmd == "d":
-            print("Moving right...")
+        if angle > 0:
+            print("Good luck everyone, I am turning right now.....")
             right()
-            set_speed(100) 
-            
-        elif cmd == "x":
+            time.sleep(duration)
             stop()
             
-        else:
+        elif angle < 0:
+            print("Good luck everyone, I am turning left now.....")
+            left()
+            time.sleep(duration)
             stop()
             
+        
 except KeyboardInterrupt:
     # Graceful exit on Ctrl+C
     stop()
     GPIO.cleanup()
+        
+        
+            
 
-    
 
