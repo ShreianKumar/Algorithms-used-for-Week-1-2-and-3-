@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+#
+#  Task2Week1.py
+#  
+#  Copyright 2026 Unknown <rasp4@raspberrypi>
+#  
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#  
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#  
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+#  MA 02110-1301, USA.
+#  
+#  
+
+import RPi.GPIO as GPIO
+import time
+import sys
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# Pin Definitions
+in1, in2, en1 = 17, 18, 27  # Left Motor
+in3, in4, en2 = 23, 24, 22  # Right Motor
+
+# Setup pins
+pins = [in1, in2, en1, in3, in4, en2]
+for pin in pins:
+    GPIO.setup(pin, GPIO.OUT)
+
+# Initialize PWM outside the loop
+pwm_left = GPIO.PWM(en1,1000)
+pwm_right = GPIO.PWM(en2, 1000)
+pwm_left.start(0)
+pwm_right.start(0)
+
+def set_speed(speed):
+    pwm_left.ChangeDutyCycle(speed)
+    pwm_right.ChangeDutyCycle(speed)
+
+
+def stop():
+    GPIO.output(in1, False)
+    GPIO.output(in2, False)
+    GPIO.output(in3, False)
+    GPIO.output(in4, False)
+    set_speed(0)
+    
+def left():
+    GPIO.output(in1,False)
+    GPIO.output(in2, True)
+    GPIO.output(in3, True)
+    GPIO.output(in4, False)
+    
+def right():
+    GPIO.output(in1, True)
+    GPIO.output(in2, False)
+    GPIO.output(in3, False)
+    GPIO.output(in4, True)
+
+
+try:
+    while True:
+        cmd = input("Command: ").lower()
+        
+        if cmd == "a":
+            print("Moving left...")
+            left()
+            set_speed(100) 
+        
+        elif cmd == "d":
+            print("Moving right...")
+            right()
+            set_speed(100) 
+            
+        elif cmd == "x":
+            stop()
+            
+        else:
+            stop()
+            
+except KeyboardInterrupt:
+    # Graceful exit on Ctrl+C
+    stop()
+    GPIO.cleanup()
+
+    
+
