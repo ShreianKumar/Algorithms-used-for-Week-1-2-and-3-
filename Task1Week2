@@ -1,0 +1,148 @@
+import RPi.GPIO as GPIO
+import time
+from picamera2 import Picamera2
+import cv2
+
+# --- Configuration ---
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# Pin Definitions
+in1, in2, en1 = 17, 18, 27  # Left Motor
+in3, in4, en2 = 23, 24, 22  # Right Motor
+
+# Setup pins
+pins = [in1, in2, en1, in3, in4, en2]
+for pin in pins:
+    GPIO.setup(pin, GPIO.OUT)
+
+# Initialize PWM
+pwm_left = GPIO.PWM(en1, 1000)
+pwm_right = GPIO.PWM(en2, 1000)
+pwm_left.start(0)
+pwm_right.start(0)
+
+# --- PID Constants & Variables ---
+# If it overshoots, decrease Kp or increase Kd slightly.
+Kp = 0.3 
+Ki = 0.005
+Kd = 0.25
+integral = 0
+last_error = 0
+movement = 0
+base_speed = 50 # Lowering base speed helps the Pi process sharp corners in time
+sharp_threshold = 80 # The pixel error distance that triggers a hard pivot
+
+# --- Movement Functions ---
+def forwards():
+    GPIO.output(in1, True); GPIO.output(in2, False)
+    GPIO.output(in3, True); GPIO.output(in4, False)
+
+def stop():
+    GPIO.output(in1, False); GPIO.output(in2, False)
+    GPIO.output(in3, False); GPIO.output(in4, False)
+    pwm_left.ChangeDutyCycle(0)
+    pwm_right.ChangeDutyCycle(0)
+def reverseleft():
+    GPIO.output(in1, False); GPIO.output(in2, True)
+    GPIO.output(in3, True); GPIO.output(in4, False)
+def reverseright():
+    GPIO.output(in1, True); GPIO.output(in2, False)
+    GPIO.output(in3, False); GPIO.output(in4, True)
+ 
+
+
+# --- Camera Setup ---
+picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(main={"format": "XRGB8888", "size": (640, 480)}))
+picam2.start()
+
+try:
+    while True:
+        image = picam2.capture_array()
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Thresholding to find the black line
+        _, blackimage = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)
+        mask = cv2.erode(blackimage, None, iterations=2)
+        mask = cv2.dilate(mask, None, iterations=2)
+        
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        
+        if len(contours) > 0:
+            forwards()
+            c = max(contours, key=cv2.contourArea)
+            M = cv2.moments(c)
+            
+            if M['m00'] != 0:
+                cX = int(M['m10'] / M['m00'])
+                cY = int(M['m01'] / M['m00'])
+                
+                # Calculate Error (Target is center of 640px width = 320)
+                error = 320 - cX
+                
+                # PID Math
+                P = Kp * error
+                integral += error
+                # Prevent integral windup (caps the "memory" of the error)
+                integral = max(-500, min(500, integral)) 
+                derivative = error - last_error
+                D = Kd * derivative
+                
+                control = P + (Ki * integral) + D
+                last_error = error
+                
+                # --- Steering Logic ---
+                if error < -sharp_threshold:
+                    # Sharp RIGHT: Kill the inside motor to pivot
+                    reverseright()
+                    left_speed = 15 + abs(control)
+                    right_speed = 15 + abs(control)
+                    movement = -1
+                elif error > sharp_threshold:
+                    # Sharp LEFT: Kill the inside motor to pivot
+                    reverseleft()
+                    left_speed = 15 + abs(control)
+                    right_speed = 15 + abs(control)
+                    movement = 1
+                else:
+                    # Normal PID Path Following
+                    left_speed = base_speed - control
+                    right_speed = base_speed + control
+                
+                # Constrain speeds to 0-100%
+                left_speed = max(0, min(80, left_speed))
+                right_speed = max(0, min(80, right_speed))
+
+                pwm_left.ChangeDutyCycle(left_speed)
+                pwm_right.ChangeDutyCycle(right_speed)
+
+                # Visual Feedback
+                cv2.circle(image, (cX, cY), 10, (0, 0, 255), -1)
+                cv2.putText(image, f"Err: {error}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        else:
+            # If no line is found, stop to prevent runaway
+            if movement == -1:
+                left_speed = 0
+                right_speed = 25 + abs(control)
+                movement = -1
+            elif movement == 1:
+                left_speed = 25 - abs(control)
+                right_speed = 0
+                movement = 1
+            
+
+        cv2.imshow("Line Tracker", image)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+finally:
+    # Shutdown sequence
+    print("Cleaning up...")
+    stop()
+    picam2.stop()
+    cv2.destroyAllWindows()
+    GPIO.cleanup()
+
+
