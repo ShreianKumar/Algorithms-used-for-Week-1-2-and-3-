@@ -124,10 +124,10 @@ try:
             # If no line is found, stop to prevent runaway
             if movement == -1:
                 left_speed = 0
-                right_speed = 25 + abs(control)
+                right_speed = 25 
                 movement = -1
             elif movement == 1:
-                left_speed = 25 - abs(control)
+                left_speed = 25 
                 right_speed = 0
                 movement = 1
             
